@@ -5,6 +5,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
+import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import com.fahim.geminiApiComposeStarter.data.GeminiRepositoryImpl
 import com.fahim.geminiApiComposeStarter.security.ApiKeyManager
 import com.fahim.geminiApiComposeStarter.ui.chat.ChatRoute
@@ -18,16 +20,12 @@ class MainActivity : ComponentActivity() {
         val apiKeyManager =
             ApiKeyManager(applicationContext)
 
-        // Get encrypted API key if it already exists
         var apiKey = apiKeyManager.getApiKey()
+        val configuredApiKey = BuildConfig.GEMINI_API_KEY.trim()
 
-        // First launch: encrypt the API key from BuildConfig
-        if (apiKey == null && BuildConfig.GEMINI_API_KEY.isNotBlank()) {
-
-            apiKeyManager.saveApiKey(
-                BuildConfig.GEMINI_API_KEY
-            )
-
+        // Refresh the encrypted value when local.properties changes.
+        if (configuredApiKey.isNotEmpty() && apiKey != configuredApiKey) {
+            apiKeyManager.saveApiKey(configuredApiKey)
             apiKey = apiKeyManager.getApiKey()
         }
 
@@ -39,6 +37,7 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -47,7 +46,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             GeminiApiComposeStarterTheme {
                 ChatRoute(
-                    viewModel = viewModel
+                    viewModel = viewModel,
+                    windowSizeClass = calculateWindowSizeClass(this),
                 )
             }
         }
