@@ -1,5 +1,13 @@
 package com.fahim.geminiApiComposeStarter.ui.chat
 
+import android.Manifest
+import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.speech.RecognizerIntent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,13 +29,22 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedIconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
@@ -44,9 +61,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -57,10 +77,12 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fahim.geminiApiComposeStarter.R
 import com.fahim.geminiApiComposeStarter.ui.text.toBoldAnnotatedString
 import com.fahim.geminiApiComposeStarter.ui.theme.GeminiApiComposeStarterTheme
+import java.util.Locale
 
 @Composable
 fun ChatRoute(
@@ -68,6 +90,34 @@ fun ChatRoute(
     windowSizeClass: WindowSizeClass,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val speechPrompt = stringResource(R.string.speech_prompt)
+
+    val speechLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode != Activity.RESULT_OK) return@rememberLauncherForActivityResult
+        val spoken = result.data
+            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()
+        if (!spoken.isNullOrBlank()) {
+            viewModel.onVoiceResult(spoken)
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            launchSpeechRecognizer(
+                prompt = speechPrompt,
+                launcher = { intent -> speechLauncher.launch(intent) },
+                onUnavailable = viewModel::onSpeechUnavailable,
+            )
+        } else {
+            viewModel.onMicPermissionDenied()
+        }
+    }
 
     ChatScreen(
         state = state,
@@ -76,9 +126,49 @@ fun ChatRoute(
         onSend = viewModel::onSend,
         onRetry = viewModel::onRetry,
         onErrorShown = viewModel::onErrorShown,
+        onVoiceClick = {
+            val hasMicPermission = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO,
+            ) == PackageManager.PERMISSION_GRANTED
+
+            if (hasMicPermission) {
+                launchSpeechRecognizer(
+                    prompt = speechPrompt,
+                    launcher = { intent -> speechLauncher.launch(intent) },
+                    onUnavailable = viewModel::onSpeechUnavailable,
+                )
+            } else {
+                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        },
+        onToggleAutoSendVoice = viewModel::onToggleAutoSendVoice,
+        onToggleDynamicColor = viewModel::onToggleDynamicColor,
+        onClearHistory = viewModel::onClearHistory,
     )
 }
 
+private fun launchSpeechRecognizer(
+    prompt: String,
+    launcher: (Intent) -> Unit,
+    onUnavailable: () -> Unit,
+) {
+    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+        putExtra(
+            RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+        )
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+        putExtra(RecognizerIntent.EXTRA_PROMPT, prompt)
+    }
+    try {
+        launcher(intent)
+    } catch (_: ActivityNotFoundException) {
+        onUnavailable()
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     state: ChatUiState,
@@ -87,6 +177,10 @@ fun ChatScreen(
     onSend: () -> Unit,
     onRetry: () -> Unit,
     onErrorShown: () -> Unit,
+    onVoiceClick: () -> Unit = {},
+    onToggleAutoSendVoice: () -> Unit = {},
+    onToggleDynamicColor: () -> Unit = {},
+    onClearHistory: () -> Unit = {},
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
     val layout = rememberChatLayout(windowSizeClass)
@@ -98,7 +192,7 @@ fun ChatScreen(
         if (errorMessage != null) {
             val result = snackbarHostState.showSnackbar(
                 message = errorMessage,
-                actionLabel = retryLabel,
+                actionLabel = if (state.errorCanRetry) retryLabel else null,
                 withDismissAction = true,
                 duration = SnackbarDuration.Long,
             )
@@ -113,6 +207,16 @@ fun ChatScreen(
         modifier = Modifier
             .fillMaxSize()
             .imePadding(),
+        topBar = {
+            ChatTopBar(
+                autoSendVoice = state.autoSendVoice,
+                dynamicColor = state.dynamicColor,
+                clearEnabled = state.messages.isNotEmpty() && !state.isLoading,
+                onToggleAutoSendVoice = onToggleAutoSendVoice,
+                onToggleDynamicColor = onToggleDynamicColor,
+                onClearHistory = onClearHistory,
+            )
+        },
         snackbarHost = {
             SnackbarHost(snackbarHostState)
         },
@@ -167,6 +271,7 @@ fun ChatScreen(
                     inputMinLines = layout.inputMinLines,
                     onPromptChange = onPromptChange,
                     onSend = onSend,
+                    onVoiceClick = onVoiceClick,
                 )
             }
 
@@ -222,17 +327,19 @@ private fun ConversationArea(
     bubbleMaxWidthFraction: Float,
     modifier: Modifier = Modifier,
 ) {
-    if (messages.isEmpty()) {
+    if (messages.isEmpty() && !isLoading) {
         EmptyConversation(modifier = modifier)
         return
     }
 
     val listState = rememberLazyListState()
-    val latestMessageId = messages.last().id
+    val latestMessageId = messages.lastOrNull()?.id
     val lastIndex = messages.lastIndex + if (isLoading) 1 else 0
 
     LaunchedEffect(latestMessageId, isLoading) {
-        listState.animateScrollToItem(lastIndex)
+        if (lastIndex >= 0) {
+            listState.animateScrollToItem(lastIndex)
+        }
     }
 
     LazyColumn(
@@ -444,6 +551,66 @@ private fun ConfigurationErrorCard(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChatTopBar(
+    autoSendVoice: Boolean,
+    dynamicColor: Boolean,
+    clearEnabled: Boolean,
+    onToggleAutoSendVoice: () -> Unit,
+    onToggleDynamicColor: () -> Unit,
+    onClearHistory: () -> Unit,
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+
+    CenterAlignedTopAppBar(
+        title = { Text(stringResource(R.string.gemini)) },
+        actions = {
+            Box {
+                IconButton(onClick = { menuExpanded = true }) {
+                    Icon(
+                        imageVector = Icons.Filled.MoreVert,
+                        contentDescription = stringResource(R.string.more_options),
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.auto_send_voice)) },
+                        onClick = onToggleAutoSendVoice,
+                        trailingIcon = {
+                            Checkbox(
+                                checked = autoSendVoice,
+                                onCheckedChange = null,
+                            )
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.dynamic_color)) },
+                        onClick = onToggleDynamicColor,
+                        trailingIcon = {
+                            Checkbox(
+                                checked = dynamicColor,
+                                onCheckedChange = null,
+                            )
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.clear_history)) },
+                        onClick = {
+                            menuExpanded = false
+                            onClearHistory()
+                        },
+                        enabled = clearEnabled,
+                    )
+                }
+            }
+        },
+    )
+}
+
 @Composable
 private fun PromptBar(
     prompt: String,
@@ -452,6 +619,7 @@ private fun PromptBar(
     inputMinLines: Int,
     onPromptChange: (String) -> Unit,
     onSend: () -> Unit,
+    onVoiceClick: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -477,6 +645,18 @@ private fun PromptBar(
                 }
             },
         )
+
+        OutlinedIconButton(
+            onClick = onVoiceClick,
+            enabled = enabled,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Mic,
+                contentDescription = stringResource(R.string.voice_input),
+            )
+        }
+
+        Spacer(Modifier.width(8.dp))
 
         FilledIconButton(
             onClick = onSend,
